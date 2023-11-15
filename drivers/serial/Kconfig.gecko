@@ -13,3 +13,26 @@ config UART_GECKO
 	select PINCTRL if SOC_GECKO_SERIES1
 	help
 	  Enable the Gecko uart driver.
+
+# TODO better depends on for EMDRV
+config UART_GECKO_DMA
+	bool "Gecko UART/USART DMA driver"
+	depends on HAS_SILABS_GECKO
+	depends on GPIO_GECKO
+	select DMA
+	select DMA_GECKO
+	select SERIAL_HAS_DRIVER
+	select SERIAL_SUPPORT_INTERRUPT
+	select SOC_GECKO_USART
+	select UART_GECKO
+	help
+	  Enable the Gecko uart driver.
+
+if UART_GECKO_DMA
+config UART_GECKO_DMA_QUEUE
+	int "DMA Queue size"
+	default 2
+	depends on UART_GECKO_DMA
+	help
+	  Size of the queue of DMA buffers, does not effect DMA buffer size
+endif

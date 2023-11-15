@@ -10,9 +10,9 @@
 	/* configuration for usart0 device, operating as SPI */
 	usart0_default: usart0_default {
 		group1 {
-			psels = <GECKO_PSEL(SPI_SCK, C, 2)>,
-				<GECKO_PSEL(SPI_MOSI, C, 0)>,
-				<GECKO_PSEL(SPI_MISO, C, 1)>;
+			psels = <GECKO_PSEL(UART_TX, C, 0)>,
+				<GECKO_PSEL(UART_RX, C, 1)>,
+				<GECKO_LOC(UART, 0)>;
 		};
 	};
 

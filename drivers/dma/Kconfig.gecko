@@ -1,0 +1,11 @@
+# Silabs Gecko DMAC driver configuration options
+
+# Copyright (c) 2022 Kai Meinhard
+# SPDX-License-Identifier: Apache-2.0
+
+config DMA_GECKO
+	bool "Silabs Gecko DMA driver"
+	depends on SOC_FAMILY_EXX32
+	depends on DMA
+	help
+	  Enable Silabs Gecko MCU Family (EXX32) Direct Memory Access driver.

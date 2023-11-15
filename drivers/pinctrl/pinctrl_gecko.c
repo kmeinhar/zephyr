@@ -21,6 +21,7 @@ int pinctrl_configure_pins(const pinctrl_soc_pin_t *pins, uint8_t pin_cnt, uintp
 #ifdef CONFIG_UART_GECKO
 	struct soc_gpio_pin rxpin = {0, 0, 0, 0};
 	struct soc_gpio_pin txpin = {0, 0, 0, 0};
+	struct soc_gpio_pin cspin = {0, 0, 0, 0};
 #endif /* CONFIG_UART_GECKO */
 
 	struct soc_gpio_pin pin_config = {0, 0, 0, 0};
@@ -101,6 +102,14 @@ int pinctrl_configure_pins(const pinctrl_soc_pin_t *pins, uint8_t pin_cnt, uintp
 			lebase->ROUTELOC0 |= (loc << _LEUART_ROUTELOC0_TXLOC_SHIFT);
 			break;
 #else /* CONFIG_SOC_GECKO_SERIES1 */
+		case GECKO_FUN_UART_CTS:
+			cspin.port = GECKO_GET_PORT(pins[i]);
+			cspin.pin = GECKO_GET_PIN(pins[i]);
+			cspin.mode = gpioModePushPull;
+			cspin.out = 1;
+			GPIO_PinModeSet(cspin.port, cspin.pin, cspin.mode,
+					cspin.out);
+			break;
 		case GECKO_FUN_UART_LOC:
 #ifdef CONFIG_SOC_GECKO_HAS_INDIVIDUAL_PIN_LOCATION
 			/* For SOCs with configurable pin_cfg locations (set in SOC Kconfig) */
@@ -113,13 +122,17 @@ int pinctrl_configure_pins(const pinctrl_soc_pin_t *pins, uint8_t pin_cnt, uintp
 			base->ROUTE = USART_ROUTE_RXPEN | USART_ROUTE_TXPEN | (loc << 8);
 #elif defined(GPIO_USART_ROUTEEN_RXPEN) && defined(GPIO_USART_ROUTEEN_TXPEN)
 			GPIO->USARTROUTE[usart_num].ROUTEEN =
-				GPIO_USART_ROUTEEN_TXPEN | GPIO_USART_ROUTEEN_RXPEN;
+				GPIO_USART_ROUTEEN_TXPEN | GPIO_USART_ROUTEEN_RXPEN |
+				GPIO_USART_ROUTEEN_CSPEN;
 			GPIO->USARTROUTE[usart_num].TXROUTE =
 				(txpin.pin << _GPIO_USART_TXROUTE_PIN_SHIFT) |
 				(txpin.port << _GPIO_USART_TXROUTE_PORT_SHIFT);
 			GPIO->USARTROUTE[usart_num].RXROUTE =
 				(rxpin.pin << _GPIO_USART_RXROUTE_PIN_SHIFT) |
 				(rxpin.port << _GPIO_USART_RXROUTE_PORT_SHIFT);
+			GPIO->USARTROUTE[usart_num].CSROUTE =
+				(cspin.pin << _GPIO_USART_CSROUTE_PIN_SHIFT) |
+				(cspin.port << _GPIO_USART_CSROUTE_PORT_SHIFT);
 #endif /* CONFIG_SOC_GECKO_HAS_INDIVIDUAL_PIN_LOCATION */
 
 #ifdef UART_GECKO_HW_FLOW_CONTROL

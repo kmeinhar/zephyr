@@ -12,6 +12,10 @@
 #include <em_cmu.h>
 #include <soc.h>
 
+#ifdef CONFIG_UART_GECKO_DMA
+#include <uartdrv.h>
+#endif /* CONFIG_UART_GECKO_DMA */
+
 #ifdef CONFIG_PINCTRL
 #include <zephyr/drivers/pinctrl.h>
 #else
@@ -119,6 +123,12 @@ struct uart_gecko_config {
 	const struct pinctrl_dev_config *pcfg;
 #endif /* CONFIG_PINCTRL */
 	USART_TypeDef *base;
+#ifdef CONFIG_UART_GECKO_DMA
+	UARTDRV_Handle_t drv_handle;
+	UARTDRV_InitUart_t *drv_init;
+	uint8_t *rx_buffer;
+	uint8_t rx_buffer_len;
+#endif /* CONFIG_UART_GECKO_DMA */
 	CMU_Clock_TypeDef clock;
 	uint32_t baud_rate;
 #ifndef CONFIG_PINCTRL
@@ -208,26 +218,61 @@ static int uart_gecko_fifo_fill(const struct device *dev, const uint8_t *tx_data
 	const struct uart_gecko_config *config = dev->config;
 	uint8_t num_tx = 0U;
 
+#ifdef CONFIG_UART_GECKO_DMA
+	Ecode_t err;
+	err = UARTDRV_Transmit(config->drv_handle, (uint8_t*) tx_data, len, NULL);
+	if (err != ECODE_EMDRV_UARTDRV_OK) { return err; }
+	num_tx = len;
+#else
 	while ((len - num_tx > 0) &&
 	       (config->base->STATUS & USART_STATUS_TXBL)) {
 
 		config->base->TXDATA = (uint32_t)tx_data[num_tx++];
 	}
+#endif /* CONFIG_UART_GECKO_DMA */
 
 	return num_tx;
 }
 
+#ifdef CONFIG_UART_GECKO_DMA
+void rx_dma_callback(struct UARTDRV_HandleData *handle,
+                                   Ecode_t transferStatus,
+                                   uint8_t *data_buffer,
+                                   UARTDRV_Count_t transferCount){
+	// data_buffer is NULL when receive is aborted
+	if (data_buffer != NULL) {
+		UARTDRV_Receive(handle, data_buffer, transferCount, rx_dma_callback);
+	}
+}
+#endif
+
 static int uart_gecko_fifo_read(const struct device *dev, uint8_t *rx_data,
-			       const int len)
+				const int len)
 {
 	const struct uart_gecko_config *config = dev->config;
 	uint8_t num_rx = 0U;
+#ifdef CONFIG_UART_GECKO_DMA
+	Ecode_t err;
+	UARTDRV_Count_t bytesReceived, bytesRemaining;
+	uint8_t* data_buffer;
 
+	UARTDRV_GetReceiveStatus(config->drv_handle, &data_buffer, &bytesReceived, &bytesRemaining);
+	num_rx = bytesReceived > len ? len : bytesReceived;
+	for (int i = 0; i < num_rx; i++) { rx_data[i] = data_buffer[i]; }
+
+	// TODO Dropping the current receive operation will lead to losing
+	// data when bytesReceived > len
+	err = UARTDRV_Abort(config->drv_handle, uartdrvAbortReceive);
+	if (err != ECODE_EMDRV_UARTDRV_OK) { return err; }
+	err = UARTDRV_Receive(config->drv_handle, data_buffer, config->rx_buffer_len, rx_dma_callback);
+	if (err != ECODE_EMDRV_UARTDRV_OK) { return err; }
+#else
 	while ((len - num_rx > 0) &&
-	       (config->base->STATUS & USART_STATUS_RXDATAV)) {
+		(config->base->STATUS & USART_STATUS_RXDATAV)) {
 
 		rx_data[num_rx++] = (uint8_t)config->base->RXDATA;
 	}
+#endif
 
 	return num_rx;
 }
@@ -269,7 +314,13 @@ static int uart_gecko_irq_tx_ready(const struct device *dev)
 static void uart_gecko_irq_rx_enable(const struct device *dev)
 {
 	const struct uart_gecko_config *config = dev->config;
-	uint32_t mask = USART_IEN_RXDATAV;
+#ifdef CONFIG_UART_GECKO_DMA
+	uint32_t mask = USART_IEN_TCMP0;
+	// Configure a receiver timout interrupt that fires afer 4 baud
+	config->base->TIMECMP0 = USART_TIMECMP0_TSTART_RXEOF | USART_TIMECMP0_TSTOP_RXACT | (_USART_TIMECMP0_TCMPVAL_MASK & 0x01);
+#else
+       uint32_t mask = USART_IEN_RXDATAV;
+#endif /* CONFIG_UART_GECKO_DMA */
 
 	USART_IntEnable(config->base, mask);
 }
@@ -277,7 +328,11 @@ static void uart_gecko_irq_rx_enable(const struct device *dev)
 static void uart_gecko_irq_rx_disable(const struct device *dev)
 {
 	const struct uart_gecko_config *config = dev->config;
+#ifdef CONFIG_UART_GECKO_DMA
+	uint32_t mask = USART_IEN_TCMP0;
+#else
 	uint32_t mask = USART_IEN_RXDATAV;
+#endif
 
 	USART_IntDisable(config->base, mask);
 }
@@ -287,13 +342,21 @@ static int uart_gecko_irq_rx_full(const struct device *dev)
 	const struct uart_gecko_config *config = dev->config;
 	uint32_t flags = USART_IntGet(config->base);
 
+#ifdef CONFIG_UART_GECKO_DMA
+	return (flags & USART_IF_TCMP0) != 0U;
+#else
 	return (flags & USART_IF_RXDATAV) != 0U;
+#endif
 }
 
 static int uart_gecko_irq_rx_ready(const struct device *dev)
 {
 	const struct uart_gecko_config *config = dev->config;
+#ifdef CONFIG_UART_GECKO_DMA
+	uint32_t mask = USART_IEN_TCMP0;
+#else
 	uint32_t mask = USART_IEN_RXDATAV;
+#endif
 
 	return (config->base->IEN & mask)
 		&& uart_gecko_irq_rx_full(dev);
@@ -344,6 +407,11 @@ static void uart_gecko_isr(const struct device *dev)
 	if (data->callback) {
 		data->callback(dev, data->cb_data);
 	}
+#ifdef CONFIG_UART_GECKO_DMA
+	const struct uart_gecko_config *config = dev->config;
+	// Timer compare interrupt does not clear itself
+	USART_IntClear(config->base, USART_IF_TCMP0);
+#endif
 }
 #endif /* CONFIG_UART_INTERRUPT_DRIVEN */
 
@@ -422,14 +490,8 @@ static void uart_gecko_init_pins(const struct device *dev)
 }
 #endif /* !CONFIG_PINCTRL */
 
-/**
- * @brief Main initializer for UART
- *
- * @param dev UART device to be initialized
- * @return int 0
- */
-static int uart_gecko_init(const struct device *dev)
-{
+static int uart_gecko_configure(const struct device *dev,
+			 const struct uart_config *cfg) {
 #ifdef CONFIG_PINCTRL
 	int err;
 #endif /* CONFIG_PINCTRL */
@@ -445,11 +507,22 @@ static int uart_gecko_init(const struct device *dev)
 	CMU_ClockEnable(config->clock, true);
 
 	/* Init USART */
-	usartInit.baudrate = config->baud_rate;
+	usartInit.baudrate = cfg->baudrate;
+	usartInit.autoCsEnable = 1;
 #ifdef UART_GECKO_HW_FLOW_CONTROL
 	usartInit.hwFlowControl = config->hw_flowcontrol ?
 		usartHwFlowControlCtsAndRts : usartHwFlowControlNone;
 #endif
+#ifdef CONFIG_UART_GECKO_DMA
+	Ecode_t ecode = UARTDRV_InitUart(config->drv_handle, config->drv_init);
+	if (ecode != ECODE_EMDRV_UARTDRV_OK) { return ecode; }
+	// It is always required to have a receive operation running or RX hardware is disabled
+	err = UARTDRV_Receive(config->drv_handle, config->rx_buffer, config->rx_buffer_len, rx_dma_callback);
+	if (ecode != ECODE_EMDRV_UARTDRV_OK) { return ecode; }
+#endif
+
+	// Reduce oversampling to achieve baud rate higher than 2M
+	usartInit.oversampling = usartOVS8;
 	USART_InitAsync(config->base, &usartInit);
 
 #ifdef CONFIG_PINCTRL
@@ -465,6 +538,28 @@ static int uart_gecko_init(const struct device *dev)
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN
 	config->irq_config_func(dev);
 #endif
+	return 0;
+}
+static int uart_gecko_config_get(const struct device *dev,
+		struct uart_config *cfg) {
+	return 0;
+}
+
+/**
+ * @brief Main initializer for UART
+ *
+ * @param dev UART device to be initialized
+ * @return int 0
+ */
+static int uart_gecko_init(const struct device *dev)
+{
+	const struct uart_gecko_config *config = dev->config;
+
+	const struct uart_config cfg = {
+		.baudrate = config->baud_rate,
+	};
+
+	uart_gecko_configure(dev, &cfg);
 
 	return 0;
 }
@@ -473,6 +568,8 @@ static const struct uart_driver_api uart_gecko_driver_api = {
 	.poll_in = uart_gecko_poll_in,
 	.poll_out = uart_gecko_poll_out,
 	.err_check = uart_gecko_err_check,
+	.configure = uart_gecko_configure,
+	.config_get = uart_gecko_config_get,
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN
 	.fifo_fill = uart_gecko_fifo_fill,
 	.fifo_read = uart_gecko_fifo_read,
@@ -664,15 +761,47 @@ DT_INST_FOREACH_STATUS_OKAY(GECKO_UART_INIT)
 #endif
 
 #ifdef CONFIG_PINCTRL
+#ifdef CONFIG_UART_GECKO_DMA
+// TODO UART pins are configured by UARTDRV and pin control driver
+#define GECKO_UART_DMA_INIT(idx) \
+DEFINE_BUF_QUEUE(CONFIG_UART_GECKO_DMA_QUEUE, dma_usart_rx_buffer_##idx); \
+DEFINE_BUF_QUEUE(CONFIG_UART_GECKO_DMA_QUEUE, dma_usart_tx_buffer_##idx); \
+uint8_t dma_rx_buf_##idx[DT_INST_PROP_OR(idx, dma_rx_queue, 0)]; \
+UARTDRV_HandleData_t uartdrv_handle_data_##idx; \
+UARTDRV_InitUart_t uartdrv_handle_init_##idx = { \
+  .port = (USART_TypeDef*) DT_INST_REG_ADDR(idx), \
+  .baudRate = DT_INST_PROP(idx, current_speed), \
+  .txPort = DT_INST_PROP_BY_IDX(idx, location_tx, 1), \
+  .rxPort = DT_INST_PROP_BY_IDX(idx, location_rx, 1), \
+  .txPin = DT_INST_PROP_BY_IDX(idx, location_tx, 2), \
+  .rxPin = DT_INST_PROP_BY_IDX(idx, location_rx, 2), \
+  .uartNum = idx, \
+  .rxQueue = (UARTDRV_Buffer_FifoQueue_t *)&dma_usart_rx_buffer_##idx, \
+  .txQueue = (UARTDRV_Buffer_FifoQueue_t *)&dma_usart_tx_buffer_##idx, \
+  .stopBits = usartStopbits1, \
+  .parity = usartNoParity, \
+};
+#define GECKO_UART_DMA_STRUCT(idx) \
+    .drv_handle = &uartdrv_handle_data_##idx, \
+    .drv_init = &uartdrv_handle_init_##idx, \
+    .rx_buffer = dma_rx_buf_##idx, \
+    .rx_buffer_len= DT_INST_PROP_OR(idx, dma_rx_queue, 0),
+#else
+#define GECKO_UART_DMA_INIT(idx)
+#define GECKO_UART_DMA_STRUCT(idx)
+#endif /* CONFIG_UART_GECKO_DMA */
+
 #define GECKO_USART_INIT(idx)						       \
 	PINCTRL_DT_INST_DEFINE(idx);					       \
 	GECKO_USART_IRQ_HANDLER_DECL(idx);				       \
 									       \
+	GECKO_UART_DMA_INIT(idx) \
 	static const struct uart_gecko_config usart_gecko_cfg_##idx = {        \
 		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(idx),		       \
 		.base = (USART_TypeDef *)DT_INST_REG_ADDR(idx),		       \
 		.clock = GET_GECKO_USART_CLOCK(idx),			       \
 		.baud_rate = DT_INST_PROP(idx, current_speed),		       \
+		GECKO_UART_DMA_STRUCT(idx) \
 		GECKO_USART_IRQ_HANDLER_FUNC(idx)			       \
 		};							       \
 									       \

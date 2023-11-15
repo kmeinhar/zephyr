@@ -13,6 +13,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include <cortex_m/tz.h>
+
 #include <em_chip.h>
 #include <em_cmu.h>
 #include <em_emu.h>
@@ -208,6 +210,17 @@ static void swo_init(void)
  */
 static int silabs_exx32_init(void)
 {
+
+	unsigned int oldLevel; /* old interrupt lock level */
+
+	/* disable interrupts */
+	oldLevel = irq_lock();
+
+	CMU->CLKEN1_SET = CMU_CLKEN1_SMU;
+	SMU->PPUSATD0_CLR = _SMU_PPUSATD0_MASK;
+	SMU->PPUSATD1_CLR = (_SMU_PPUSATD1_MASK & ~SMU_PPUSATD1_SMU);
+	tz_sau_configure(false, true);
+
 	/* handle chip errata */
 	CHIP_Init();
 

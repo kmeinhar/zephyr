@@ -33,3 +33,13 @@ properties:
   location-cts:
     type: array
     description: CTS pin configuration defined as <location port pin>
+
+  dma-rx-queue:
+    type: int
+    required: false
+    description: Size of the RX queue filled by DMA
+
+  dma-tx-queue:
+    type: int
+    required: false
+    description: Size of the TX queue filled by DMA
